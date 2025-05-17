@@ -1,0 +1,20 @@
+# Виртуальное окружение
+venv/
+env/
+ENV/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Секретные данные
+.env
+
+# Локальные файлы
+.DS_Store
+.idea/
+.vscode/
+
+# Логи
+*.log
