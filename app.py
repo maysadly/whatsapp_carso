@@ -303,44 +303,37 @@ def webhook():
     # Получение текущего состояния пользователя
     current_state = get_user_state(sender_phone)
     
+    # Если заявка уже завершена, не отвечаем на сообщения клиента
+    if current_state == STATES['COMPLETED'] and incoming_msg.lower() != 'новая заявка':
+        logger.info(f"Игнорирование сообщения от {sender_phone}, т.к. заявка уже завершена")
+        return "OK", 200
+    
     # Подготовка ответа в зависимости от состояния
     response_message = ""
     
     # Обработка состояний и сообщений
     if current_state == STATES['INITIAL']:
-        response_message = """RU: Здравствуйте, это компания Carso.kz!
-Для обработки вашей заявки, пожалуйста, укажите ваше полное ФИО.
-        
-KZ: Сәлеметсіз бе, бұл Carso.kz компаниясы!
-Өтінішіңізді өңдеу үшін толық аты-жөніңізді көрсетіңіз."""
+        response_message = "Здравствуйте! Для обработки вашей заявки, пожалуйста, укажите ваше полное ФИО."
         update_user_state(sender_phone, STATES['WAITING_FOR_NAME'])
     
     elif current_state == STATES['WAITING_FOR_NAME']:
         save_user_data(sender_phone, 'name', incoming_msg)
-        response_message = """RU: Спасибо! Пожалуйста, укажите ваш город.
-        
-KZ: Рақмет! Енді қалаңызды көрсетіңіз."""
+        response_message = "Спасибо! Пожалуйста, укажите ваш город."
         update_user_state(sender_phone, STATES['WAITING_FOR_CITY'])
     
     elif current_state == STATES['WAITING_FOR_CITY']:
         save_user_data(sender_phone, 'city', incoming_msg)
-        response_message = """RU: Отлично! Теперь, пожалуйста, укажите марку вашего автомобиля.
-        
-KZ: Тамаша! Енді көлігіңіздің маркасын жазыңыз."""
+        response_message = "Отлично! Теперь, пожалуйста, укажите марку вашего автомобиля."
         update_user_state(sender_phone, STATES['WAITING_FOR_CAR_BRAND'])
     
     elif current_state == STATES['WAITING_FOR_CAR_BRAND']:
         save_user_data(sender_phone, 'car_brand', incoming_msg)
-        response_message = """RU: Спасибо! Укажите, пожалуйста, год выпуска вашего автомобиля.
-        
-KZ: Рақмет! Көлігіңіздің шығарылған жылын көрсетіңіз."""
+        response_message = "Спасибо! Укажите, пожалуйста, год выпуска вашего автомобиля."
         update_user_state(sender_phone, STATES['WAITING_FOR_CAR_YEAR'])
     
     elif current_state == STATES['WAITING_FOR_CAR_YEAR']:
         save_user_data(sender_phone, 'car_year', incoming_msg)
-        response_message = """RU: Почти готово! Осталось указать пробег вашего автомобиля (в км).
-        
-KZ: Бітейін деп қалды! Енді көлігіңіздің жүрісін (км) көрсетіңіз."""
+        response_message = "Почти готово! Осталось указать пробег вашего автомобиля (в км)."
         update_user_state(sender_phone, STATES['WAITING_FOR_CAR_MILEAGE'])
     
     elif current_state == STATES['WAITING_FOR_CAR_MILEAGE']:
@@ -350,30 +343,20 @@ KZ: Бітейін деп қалды! Енді көлігіңіздің жүрі
         trello_response = send_to_trello(sender_phone)
         
         if trello_response and trello_response.get('result'):
-            response_message = """RU: Спасибо за предоставленную информацию! Ваша заявка успешно отправлена. Наш менеджер свяжется с вами в ближайшее время.
-            
-KZ: Ақпаратыңыз үшін рахмет! Сіздің өтінішіңіз сәтті жіберілді. Менеджеріміз жақын арада сізбен хабарласады."""
+            response_message = "Спасибо за предоставленную информацию! Ваша заявка успешно отправлена. Наш менеджер свяжется с вами в ближайшее время.\n\nЕсли хотите создать новую заявку, напишите 'Новая заявка'."
         else:
-            response_message = """RU: Спасибо за предоставленную информацию! Ваша заявка принята. Наш менеджер свяжется с вами в ближайшее время.
-            
-KZ: Ақпаратыңыз үшін рахмет! Өтінішіңіз қабылданды. Менеджеріміз жақын арада сізбен хабарласады."""
+            response_message = "Спасибо за предоставленную информацию! Ваша заявка принята. Наш менеджер свяжется с вами в ближайшее время.\n\nЕсли хотите создать новую заявку, напишите 'Новая заявка'."
         
         update_user_state(sender_phone, STATES['COMPLETED'])
     
     elif current_state == STATES['COMPLETED']:
-        response_message = """RU: Ваша заявка уже была отправлена. Если вы хотите создать новую заявку, напишите ‘Новая заявка’.
-        
-KZ: Сіздің өтінішіңіз бұрын жіберілген. Жаңа өтініш жасағыңыз келсе, ‘Жаңа өтініш’ деп жазыңыз."""
-        
         if incoming_msg.lower() == 'новая заявка':
             # Сброс данных для новой заявки
             user_data[sender_phone] = {}
             update_user_state(sender_phone, STATES['INITIAL'])
             
             # Запуск новой заявки
-            response_message = """RU: Здравствуйте! Для обработки вашей заявки, пожалуйста, укажите ваше полное ФИО.
-            
-KZ: Сәлеметсіз бе! Өтінішіңізді өңдеу үшін толық аты-жөніңізді көрсетіңіз."""
+            response_message = "Здравствуйте! Для обработки вашей заявки, пожалуйста, укажите ваше полное ФИО."
             update_user_state(sender_phone, STATES['WAITING_FOR_NAME'])
     
     # Отправка ответного сообщения через waApi
