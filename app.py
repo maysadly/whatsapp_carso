@@ -5,12 +5,13 @@ import logging
 import os
 from flask_cors import CORS
 from trello import TrelloClient
-from config import STATES, WAAPI_URL, WAAPI_TOKEN, WAAPI_INSTANCE_ID, TRELLO_API_KEY, TRELLO_API_TOKEN, TRELLO_BOARD_ID, TRELLO_LIST_ID
+from config import (STATES, WAAPI_URL, WAAPI_TOKEN, WAAPI_INSTANCE_ID, TRELLO_API_KEY, 
+                   TRELLO_API_TOKEN, TRELLO_BOARD_ID, TRELLO_LIST_ID, USER_TYPES, 
+                   DEALERSHIP_STATES, CLIENT_STATES, LANGUAGES, MESSAGES)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
 # Включаем CORS для всех маршрутов
 CORS(app)
@@ -62,12 +63,16 @@ def index():
 # Хранение состояний пользователей и их данных
 user_states = {}
 user_data = {}
+user_types = {}  # Хранение типа пользователя: автосалон или клиент
+user_languages = {}  # Хранение выбранного языка пользователя
 
 def get_user_state(phone_number):
     """Получение текущего состояния пользователя"""
     if (phone_number not in user_states):
-        user_states[phone_number] = STATES['INITIAL']
+        user_states[phone_number] = STATES['INITIAL']  # Начинаем с выбора языка
         user_data[phone_number] = {}
+        user_types[phone_number] = USER_TYPES['UNKNOWN']
+        user_languages[phone_number] = LANGUAGES['RU']  # По умолчанию русский язык
     return user_states[phone_number]
 
 def update_user_state(phone_number, new_state):
@@ -80,12 +85,62 @@ def save_user_data(phone_number, key, value):
         user_data[phone_number] = {}
     user_data[phone_number][key] = value
 
+def set_user_type(phone_number, user_type):
+    """Установка типа пользователя"""
+    user_types[phone_number] = user_type
+
+def get_user_type(phone_number):
+    """Получение типа пользователя"""
+    return user_types.get(phone_number, USER_TYPES['UNKNOWN'])
+
+def set_user_language(phone_number, language):
+    """Установка языка пользователя"""
+    user_languages[phone_number] = language
+
+def get_user_language(phone_number):
+    """Получение языка пользователя"""
+    return user_languages.get(phone_number, LANGUAGES['RU'])
+
+def get_message(phone_number, message_key):
+    """Получение сообщения на выбранном пользователем языке"""
+    language = get_user_language(phone_number)
+    return MESSAGES[language].get(message_key, MESSAGES['ru'][message_key])  # Если сообщения нет на выбранном языке, возвращаем на русском
+
 def send_to_trello(phone_number):
     """Отправка данных в Trello в виде карточки"""
     data = user_data[phone_number]
+    user_type = get_user_type(phone_number)
     
-    # Формирование данных о клиенте и автомобиле
-    client_info = f"""
+    if user_type == USER_TYPES['DEALERSHIP']:
+        # Формирование данных автосалона для Trello
+        card_name = f'Автосалон: {data.get("name", "Неизвестно")}'
+        card_description = f"""
+Информация об автосалоне:
+Название: {data.get('name', '')}
+Адрес: {data.get('address', '')}
+Телефон: {phone_number}
+Уже сотрудничает: {data.get('already_cooperates', 'Нет')}
+Удостоверение: {data.get('id_document', '')}
+Техпаспорт: {data.get('tech_passport', '')}
+        """
+    elif user_type == USER_TYPES['CLIENT']:
+        # Формирование данных клиента для Trello
+        card_name = f'Клиент: Регистрация гарантии'
+        card_description = f"""
+Информация о клиенте:
+Телефон: {phone_number}
+Удостоверение: {data.get('id_document', '')}
+Техпаспорт: {data.get('tech_passport', '')}
+
+Информация об автомобиле:
+Номер машины: {data.get('car_number', '')}
+Город: {data.get('city', '')}
+Пробег: {data.get('mileage', '')}
+        """
+    else:
+        # Старая логика или неопределенный тип пользователя
+        card_name = f'Заявка от {data.get("name", "Неизвестно")}'
+        card_description = f"""
 Информация о клиенте:
 ФИО: {data.get('name', '')}
 Телефон: {phone_number}
@@ -95,9 +150,7 @@ def send_to_trello(phone_number):
 Марка: {data.get('car_brand', '')}
 Год выпуска: {data.get('car_year', '')}
 Пробег: {data.get('car_mileage', '')}
-    """
-    
-    card_name = f'Заявка от {data.get("name", "Неизвестно")} ({data.get("car_brand", "")})'
+        """
     
     try:
         # Прямая отправка в Trello через API вместо использования библиотеки
@@ -110,7 +163,7 @@ def send_to_trello(phone_number):
             'key': TRELLO_API_KEY,
             'token': TRELLO_API_TOKEN,
             'name': card_name,
-            'desc': client_info,
+            'desc': card_description,
             'idList': TRELLO_LIST_ID,
             'pos': 'top'
         }
@@ -129,13 +182,13 @@ def send_to_trello(phone_number):
             
             # Запасной вариант - логирование данных локально
             logger.info(f"Локальное сохранение данных заявки: {card_name}")
-            logger.info(client_info)
+            logger.info(card_description)
             
             # Можно сохранить в локальный файл для дальнейшего импорта
             try:
                 with open('saved_applications.txt', 'a', encoding='utf-8') as f:
                     f.write(f"\n\n--- НОВАЯ ЗАЯВКА: {card_name} ---\n")
-                    f.write(client_info)
+                    f.write(card_description)
                     f.write("\n--- КОНЕЦ ЗАЯВКИ ---\n")
                 logger.info("Данные успешно сохранены в локальный файл")
             except Exception as write_error:
@@ -149,13 +202,13 @@ def send_to_trello(phone_number):
         
         # Запасной вариант - логирование данных локально
         logger.info(f"Локальное сохранение данных заявки: {card_name}")
-        logger.info(client_info)
+        logger.info(card_description)
         
         # Можно сохранить в локальный файл для дальнейшего импорта
         try:
             with open('saved_applications.txt', 'a', encoding='utf-8') as f:
                 f.write(f"\n\n--- НОВАЯ ЗАЯВКА: {card_name} ---\n")
-                f.write(client_info)
+                f.write(card_description)
                 f.write("\n--- КОНЕЦ ЗАЯВКИ ---\n")
             logger.info("Данные успешно сохранены в локальный файл")
         except Exception as write_error:
@@ -304,7 +357,8 @@ def webhook():
     current_state = get_user_state(sender_phone)
     
     # Если заявка уже завершена, не отвечаем на сообщения клиента
-    if current_state == STATES['COMPLETED'] and incoming_msg.lower() != 'новая заявка':
+    if (current_state == STATES['COMPLETED'] and 
+        incoming_msg.lower() not in ['новая заявка', 'жаңа өтінім', '9']):
         logger.info(f"Игнорирование сообщения от {sender_phone}, т.к. заявка уже завершена")
         return "OK", 200
     
@@ -313,51 +367,125 @@ def webhook():
     
     # Обработка состояний и сообщений
     if current_state == STATES['INITIAL']:
-        response_message = "Здравствуйте! Для обработки вашей заявки, пожалуйста, укажите ваше полное ФИО."
-        update_user_state(sender_phone, STATES['WAITING_FOR_NAME'])
+        # Запрос языка при первом входе
+        response_message = MESSAGES['ru']['choose_language']  # На обоих языках
+        update_user_state(sender_phone, STATES['WAITING_FOR_LANGUAGE'])
     
-    elif current_state == STATES['WAITING_FOR_NAME']:
+    elif current_state == STATES['WAITING_FOR_LANGUAGE']:
+        # Обработка выбора языка (текст или цифры)
+        if incoming_msg.lower() in ['рус', 'русский', 'ru', 'rus', '1', '1️⃣']:
+            set_user_language(sender_phone, LANGUAGES['RU'])
+            response_message = get_message(sender_phone, 'select_user_type')
+            update_user_state(sender_phone, STATES['WAITING_FOR_USER_TYPE'])
+        elif incoming_msg.lower() in ['каз', 'қаз', 'казахский', 'қазақша', 'kaz', '2', '2️⃣']:
+            set_user_language(sender_phone, LANGUAGES['KZ'])
+            response_message = get_message(sender_phone, 'select_user_type')
+            update_user_state(sender_phone, STATES['WAITING_FOR_USER_TYPE'])
+        else:
+            # Если язык не распознан, просим выбрать снова
+            response_message = MESSAGES['ru']['invalid_language']
+    
+    elif current_state == STATES['WAITING_FOR_USER_TYPE']:
+        # Обработка выбора типа пользователя (текст или цифры)
+        if incoming_msg.lower() in ['автосалон', 'автосалон', '1', '1️⃣']:
+            set_user_type(sender_phone, USER_TYPES['DEALERSHIP'])
+            response_message = get_message(sender_phone, 'dealership_name')
+            update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_NAME'])
+        elif incoming_msg.lower() in ['клиент', 'клиент', '2', '2️⃣']:
+            set_user_type(sender_phone, USER_TYPES['CLIENT'])
+            response_message = get_message(sender_phone, 'client_car_number')
+            update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_CAR_NUMBER'])
+        else:
+            response_message = get_message(sender_phone, 'invalid_user_type')
+    
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_NAME']:
         save_user_data(sender_phone, 'name', incoming_msg)
-        response_message = "Спасибо! Пожалуйста, укажите ваш город."
-        update_user_state(sender_phone, STATES['WAITING_FOR_CITY'])
+        response_message = get_message(sender_phone, 'dealership_address')
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_ADDRESS'])
     
-    elif current_state == STATES['WAITING_FOR_CITY']:
-        save_user_data(sender_phone, 'city', incoming_msg)
-        response_message = "Отлично! Теперь, пожалуйста, укажите марку вашего автомобиля."
-        update_user_state(sender_phone, STATES['WAITING_FOR_CAR_BRAND'])
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_ADDRESS']:
+        save_user_data(sender_phone, 'address', incoming_msg)
+        response_message = get_message(sender_phone, 'dealership_cooperation')
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_COOPERATION'])
     
-    elif current_state == STATES['WAITING_FOR_CAR_BRAND']:
-        save_user_data(sender_phone, 'car_brand', incoming_msg)
-        response_message = "Спасибо! Укажите, пожалуйста, год выпуска вашего автомобиля."
-        update_user_state(sender_phone, STATES['WAITING_FOR_CAR_YEAR'])
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_COOPERATION']:
+        # Обработка ответа о сотрудничестве (текст или цифры)
+        cooperation_response = incoming_msg.lower()
+        if cooperation_response in ['да', 'yes', 'иә', 'иа', '1', '1️⃣']:
+            save_user_data(sender_phone, 'already_cooperates', 'Да')
+        else:
+            save_user_data(sender_phone, 'already_cooperates', 'Нет')
+        
+        # Запрашиваем сначала удостоверение
+        response_message = get_message(sender_phone, 'dealership_id')
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_ID'])
     
-    elif current_state == STATES['WAITING_FOR_CAR_YEAR']:
-        save_user_data(sender_phone, 'car_year', incoming_msg)
-        response_message = "Почти готово! Осталось указать пробег вашего автомобиля (в км)."
-        update_user_state(sender_phone, STATES['WAITING_FOR_CAR_MILEAGE'])
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_ID']:
+        # Сохранение информации об удостоверении
+        save_user_data(sender_phone, 'id_document', incoming_msg)
+        
+        # Запрашиваем техпаспорт
+        response_message = get_message(sender_phone, 'dealership_techpassport')
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_TECHPASSPORT'])
     
-    elif current_state == STATES['WAITING_FOR_CAR_MILEAGE']:
-        save_user_data(sender_phone, 'car_mileage', incoming_msg)
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_TECHPASSPORT']:
+        # Сохранение информации о техпаспорте
+        save_user_data(sender_phone, 'tech_passport', incoming_msg)
+        
+        # Формирование сообщения о завершении
+        response_message = get_message(sender_phone, 'request_complete') + "\n\n" + get_message(sender_phone, 'new_request')
+        update_user_state(sender_phone, STATES['COMPLETED'])
         
         # Отправка данных в Trello
-        trello_response = send_to_trello(sender_phone)
+        send_to_trello(sender_phone)
+    
+    elif current_state == CLIENT_STATES['WAITING_FOR_CAR_NUMBER']:
+        save_user_data(sender_phone, 'car_number', incoming_msg)
+        response_message = get_message(sender_phone, 'client_city')
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_CITY'])
+    
+    elif current_state == CLIENT_STATES['WAITING_FOR_CITY']:
+        save_user_data(sender_phone, 'city', incoming_msg)
+        response_message = get_message(sender_phone, 'client_mileage')
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_MILEAGE'])
+    
+    elif current_state == CLIENT_STATES['WAITING_FOR_MILEAGE']:
+        save_user_data(sender_phone, 'mileage', incoming_msg)
         
-        if trello_response and trello_response.get('result'):
-            response_message = "Спасибо за предоставленную информацию! Ваша заявка успешно отправлена. Наш менеджер свяжется с вами в ближайшее время.\n\nЕсли хотите создать новую заявку, напишите 'Новая заявка'."
-        else:
-            response_message = "Спасибо за предоставленную информацию! Ваша заявка принята. Наш менеджер свяжется с вами в ближайшее время.\n\nЕсли хотите создать новую заявку, напишите 'Новая заявка'."
+        # Запрашиваем сначала удостоверение
+        response_message = get_message(sender_phone, 'client_id')
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_ID'])
+    
+    elif current_state == CLIENT_STATES['WAITING_FOR_ID']:
+        # Сохранение информации об удостоверении
+        save_user_data(sender_phone, 'id_document', incoming_msg)
         
+        # Запрашиваем техпаспорт
+        response_message = get_message(sender_phone, 'client_techpassport')
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_TECHPASSPORT'])
+    
+    elif current_state == CLIENT_STATES['WAITING_FOR_TECHPASSPORT']:
+        # Сохранение информации о техпаспорте
+        save_user_data(sender_phone, 'tech_passport', incoming_msg)
+        
+        # Формирование сообщения о завершении
+        response_message = get_message(sender_phone, 'request_complete') + "\n\n" + get_message(sender_phone, 'new_request')
         update_user_state(sender_phone, STATES['COMPLETED'])
+        
+        # Отправка данных в Trello
+        send_to_trello(sender_phone)
     
     elif current_state == STATES['COMPLETED']:
-        if incoming_msg.lower() == 'новая заявка':
-            # Сброс данных для новой заявки
+        # Обработка запроса на новую заявку (текст или цифра 9)
+        if incoming_msg.lower() in ['новая заявка', 'жаңа өтінім', '9', '9️⃣']:
+            # Сброс данных для новой заявки, но сохранение выбранного ранее языка
+            prev_language = get_user_language(sender_phone)
             user_data[sender_phone] = {}
-            update_user_state(sender_phone, STATES['INITIAL'])
+            set_user_language(sender_phone, prev_language)
             
-            # Запуск новой заявки
-            response_message = "Здравствуйте! Для обработки вашей заявки, пожалуйста, укажите ваше полное ФИО."
-            update_user_state(sender_phone, STATES['WAITING_FOR_NAME'])
+            # Запрос на выбор типа пользователя
+            response_message = get_message(sender_phone, 'select_user_type')
+            update_user_state(sender_phone, STATES['WAITING_FOR_USER_TYPE'])
     
     # Отправка ответного сообщения через waApi
     if response_message:
