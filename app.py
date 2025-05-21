@@ -1,20 +1,15 @@
-from flask import Flask, request, jsonify, send_from_directory
-import requests
-import json
 import logging
 import os
-from flask_cors import CORS
+import time
 from trello import TrelloClient
-from config import (STATES, WAAPI_URL, WAAPI_TOKEN, WAAPI_INSTANCE_ID, TRELLO_API_KEY, 
+from whatsapp_chatbot_python import GreenAPIBot, Notification
+from config import (STATES, GREEN_API_ID_INSTANCE, GREEN_API_API_TOKEN, TRELLO_API_KEY, 
                    TRELLO_API_TOKEN, TRELLO_BOARD_ID, TRELLO_LIST_ID, USER_TYPES, 
                    DEALERSHIP_STATES, CLIENT_STATES, LANGUAGES, MESSAGES)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-app = Flask(__name__)
-# Включаем CORS для всех маршрутов
-CORS(app)
 
 # Инициализация клиента Trello
 trello_client = TrelloClient(
@@ -22,49 +17,18 @@ trello_client = TrelloClient(
     api_secret=TRELLO_API_TOKEN
 )
 
-# Для отладки и мониторинга входящих запросов
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    """Простой индексный маршрут для проверки доступности сервера"""
-    logger.info(f"Получен запрос на индексную страницу: {request.method}")
-    
-    # Добавляем HTML с инструкцией по обходу предупреждения ngrok
-    html = """
-    <html>
-        <head>
-            <title>WhatsApp Bot Server</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
-                .container { max-width: 800px; margin: 0 auto; }
-                pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
-                .note { background: #ffffcc; padding: 10px; border-radius: 5px; margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>WhatsApp Bot Server is running!</h1>
-                <p>Ваш сервер успешно запущен и готов обрабатывать запросы от waApi WhatsApp.</p>
-                
-                <div class="note">
-                    <h3>Примечание по ngrok:</h3>
-                    <p>Если вы видите предупреждение от ngrok, вы можете обойти его, используя следующий заголовок в своих запросах:</p>
-                    <pre>ngrok-skip-browser-warning: true</pre>
-                    <p>Для тестирования вебхука через Postman или другие инструменты добавьте этот заголовок.</p>
-                </div>
-                
-                <h2>Endpoint для webhook:</h2>
-                <pre>/webhook</pre>
-            </div>
-        </body>
-    </html>
-    """
-    return html
+# Инициализация бота Green API
+bot = GreenAPIBot(
+    GREEN_API_ID_INSTANCE,
+    GREEN_API_API_TOKEN
+)
 
 # Хранение состояний пользователей и их данных
 user_states = {}
 user_data = {}
 user_types = {}  # Хранение типа пользователя: автосалон или клиент
 user_languages = {}  # Хранение выбранного языка пользователя
+processed_messages = {}  # Для отслеживания обработанных сообщений
 
 def get_user_state(phone_number):
     """Получение текущего состояния пользователя"""
@@ -104,7 +68,7 @@ def get_user_language(phone_number):
 def get_message(phone_number, message_key):
     """Получение сообщения на выбранном пользователем языке"""
     language = get_user_language(phone_number)
-    return MESSAGES[language].get(message_key, MESSAGES['ru'][message_key])  # Если сообщения нет на выбранном языке, возвращаем на русском
+    return MESSAGES[language].get(message_key, MESSAGES[LANGUAGES['RU']][message_key])  # Используем LANGUAGES['RU'] вместо 'ru'
 
 def send_to_trello(phone_number):
     """Отправка данных в Trello в виде карточки"""
@@ -154,6 +118,7 @@ def send_to_trello(phone_number):
     
     try:
         # Прямая отправка в Trello через API вместо использования библиотеки
+        import requests
         headers = {
             'Accept': 'application/json',
             'Content-Type': 'application/json'
@@ -217,294 +182,294 @@ def send_to_trello(phone_number):
         # Успешное завершение, даже если Trello недоступен
         return {'result': True, 'local_save': True}
 
-def send_whatsapp_message(phone_number, message):
-    """Отправка сообщения через waApi WhatsApp"""
-    url = f"{WAAPI_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-message"
+def is_message_processed(message_id, sender_phone):
+    """Проверка, было ли сообщение уже обработано"""
+    key = f"{message_id}_{sender_phone}"
+    if key in processed_messages:
+        return True
+    processed_messages[key] = True
     
-    # Удаляем '+' из номера телефона, если есть
-    phone = phone_number.replace('+', '')
+    # Очистка старых записей, чтобы не переполнять память
+    if len(processed_messages) > 1000:  # Ограничиваем количество записей
+        # Удаляем первые 200 записей (самые старые)
+        keys_to_remove = list(processed_messages.keys())[:200]
+        for old_key in keys_to_remove:
+            processed_messages.pop(old_key, None)
     
-    # Формируем chatId в формате <phone_number>@c.us
-    chat_id = f"{phone}@c.us"
-    
-    headers = {
-        'Authorization': f'Bearer {WAAPI_TOKEN}',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
-    
-    payload = {
-        "chatId": chat_id,
-        "message": message,
-        "previewLink": True
-    }
-    
-    try:
-        logger.info(f"Отправка сообщения через waApi: {payload}")
-        response = requests.post(url, headers=headers, json=payload)
-        logger.info(f"Ответ от waApi: {response.text}")
-        
-        # Проверка на успешную отправку
-        if response.status_code == 200:
-            try:
-                response_data = response.json()
-                if response_data.get('status') == 'success':
-                    logger.info("Сообщение успешно отправлено")
-                    return response_data
-                else:
-                    logger.error(f"Ошибка при отправке сообщения: {response_data}")
-            except Exception as e:
-                logger.error(f"Ошибка при обработке ответа JSON: {e}")
-        else:
-            logger.error(f"Ошибка HTTP при отправке сообщения: {response.status_code} - {response.text}")
-        
-        return response.json() if response.status_code == 200 else None
-    except Exception as e:
-        logger.error(f"Ошибка при отправке сообщения через waApi: {e}", exc_info=True)
-        return None
+    return False
 
-@app.route('/webhook', methods=['POST', 'GET'])
-def webhook():
-    """Основной обработчик сообщений WhatsApp"""
-    # Логирование входящего запроса
-    logger.info(f"Получен webhook запрос: {request.method}")
-    
-    # Проверка на пустой запрос
-    if request.content_length == 0:
-        logger.warning("Получен пустой запрос")
-        return "OK", 200  # Возвращаем OK для пустых запросов
-    
-    # Получение данных из входящего сообщения
-    if request.method == 'GET':
-        logger.info("Получен GET запрос на webhook")
-        return "Webhook is active", 200
-    
-    # Логирование данных формы и JSON
-    if request.is_json:
-        logger.info(f"JSON данные: {request.json}")
-        data = request.json
-    else:
-        logger.info(f"Данные формы: {request.form}")
-        data = request.form.to_dict()
-    
-    # Получение данных из сообщения waApi
+# Обработчик начальной команды и общей информации
+@bot.router.message(command="start")
+def start_handler(notification: Notification) -> None:
+    """Обработчик команды /start"""
     try:
-        # Формат данных waApi.app для webhook
-        if request.is_json:
-            # Проверяем формат, который получен в текущем webhook
-            if 'event' in data and data.get('event') == 'message' and 'data' in data:
-                message_data = data.get('data', {}).get('message', {})
-                
-                # Извлекаем тело сообщения
-                incoming_msg = message_data.get('body', '').strip()
-                
-                # Извлекаем номер отправителя, обычно в формате XXXXXXXXXXX@c.us
-                sender_phone = message_data.get('from', '').split('@')[0] if '@' in message_data.get('from', '') else message_data.get('from', '')
-                
-                logger.info(f"Извлечены данные из webhook: сообщение='{incoming_msg}', отправитель={sender_phone}")
-            elif 'messages' in data:
-                # Старый формат для входящих сообщений
-                message = data['messages'][0]
-                if 'text' in message:
-                    incoming_msg = message['text'].get('body', '').strip()
-                elif 'caption' in message:
-                    incoming_msg = message.get('caption', '').strip()
-                else:
-                    incoming_msg = message.get('body', '').strip()
-                
-                sender_phone = message.get('from', '').split('@')[0] if '@' in message.get('from', '') else message.get('from', '')
-            else:
-                # Для любых других форматов пытаемся извлечь нужные данные
-                incoming_msg = ''
-                sender_phone = ''
-                
-                # Рекурсивный поиск полей body и from в структуре JSON
-                def extract_fields(obj, path=''):
-                    nonlocal incoming_msg, sender_phone
-                    if isinstance(obj, dict):
-                        for key, value in obj.items():
-                            if key == 'body' and isinstance(value, str) and not incoming_msg:
-                                incoming_msg = value.strip()
-                            elif key == 'from' and isinstance(value, str) and '@' in value and not sender_phone:
-                                sender_phone = value.split('@')[0]
-                            elif isinstance(value, (dict, list)):
-                                extract_fields(value, path + '.' + key if path else key)
-                    elif isinstance(obj, list):
-                        for i, item in enumerate(obj):
-                            extract_fields(item, f"{path}[{i}]")
-                
-                extract_fields(data)
-                
-                logger.info(f"Извлечены данные из альтернативного формата: сообщение='{incoming_msg}', отправитель={sender_phone}")
-        else:
-            # Для тестирования или альтернативных форматов
-            incoming_msg = data.get('body', data.get('Body', '')).strip()
-            sender_phone = data.get('from', data.get('From', '')).replace('whatsapp:', '')
-            if '@' in sender_phone:
-                sender_phone = sender_phone.split('@')[0]
+        # Получаем данные отправителя
+        sender_data = notification.event.get('senderData', {})
+        sender_phone = sender_data.get('sender', '').split('@')[0]
+        sender_name = sender_data.get('senderName', 'Пользователь')
+        
+        # Сбрасываем состояние пользователя на начальное
+        update_user_state(sender_phone, STATES['INITIAL'])
+        
+        # Отправляем приветственное сообщение
+        try:
+            greeting_message = get_message(sender_phone, 'greeting')
+            notification.answer(greeting_message.format(name=sender_name))
+        except KeyError:
+            # Если ключа 'greeting' нет в словаре сообщений
+            notification.answer(f"Здравствуйте, {sender_name}!")
+        
+        # Отправляем меню выбора языка
+        notification.answer(get_message(sender_phone, 'choose_language'))
+        
+        logger.info(f"Отправлено приветствие пользователю {sender_phone}")
     except Exception as e:
-        logger.error(f"Ошибка при извлечении данных из входящего запроса: {e}", exc_info=True)
-        return "OK", 200
-    
-    # Если нет данных в запросе, отправляем простой ответ
-    if not incoming_msg or not sender_phone:
-        logger.warning("Не найдены необходимые параметры в запросе")
-        return "OK", 200
-    
-    logger.info(f"Сообщение: '{incoming_msg}' от {sender_phone}")
-    
-    # Получение текущего состояния пользователя
-    current_state = get_user_state(sender_phone)
-    
-    # Если заявка уже завершена, не отвечаем на сообщения клиента
-    if (current_state == STATES['COMPLETED'] and 
-        incoming_msg.lower() not in ['новая заявка', 'жаңа өтінім', '9']):
-        logger.info(f"Игнорирование сообщения от {sender_phone}, т.к. заявка уже завершена")
-        return "OK", 200
-    
-    # Подготовка ответа в зависимости от состояния
-    response_message = ""
-    
-    # Обработка состояний и сообщений
-    if current_state == STATES['INITIAL']:
-        # Запрос языка при первом входе
-        response_message = MESSAGES['ru']['choose_language']  # На обоих языках
-        update_user_state(sender_phone, STATES['WAITING_FOR_LANGUAGE'])
-    
-    elif current_state == STATES['WAITING_FOR_LANGUAGE']:
-        # Обработка выбора языка (текст или цифры)
-        if incoming_msg.lower() in ['рус', 'русский', 'ru', 'rus', '1', '1️⃣']:
-            set_user_language(sender_phone, LANGUAGES['RU'])
-            response_message = get_message(sender_phone, 'select_user_type')
-            update_user_state(sender_phone, STATES['WAITING_FOR_USER_TYPE'])
-        elif incoming_msg.lower() in ['каз', 'қаз', 'казахский', 'қазақша', 'kaz', '2', '2️⃣']:
-            set_user_language(sender_phone, LANGUAGES['KZ'])
-            response_message = get_message(sender_phone, 'select_user_type')
-            update_user_state(sender_phone, STATES['WAITING_FOR_USER_TYPE'])
-        else:
-            # Если язык не распознан, просим выбрать снова
-            response_message = MESSAGES['ru']['invalid_language']
-    
-    elif current_state == STATES['WAITING_FOR_USER_TYPE']:
-        # Обработка выбора типа пользователя (текст или цифры)
-        if incoming_msg.lower() in ['автосалон', 'автосалон', '1', '1️⃣']:
-            set_user_type(sender_phone, USER_TYPES['DEALERSHIP'])
-            response_message = get_message(sender_phone, 'dealership_name')
-            update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_NAME'])
-        elif incoming_msg.lower() in ['клиент', 'клиент', '2', '2️⃣']:
-            set_user_type(sender_phone, USER_TYPES['CLIENT'])
-            response_message = get_message(sender_phone, 'client_car_number')
-            update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_CAR_NUMBER'])
-        else:
-            response_message = get_message(sender_phone, 'invalid_user_type')
-    
-    elif current_state == DEALERSHIP_STATES['WAITING_FOR_NAME']:
-        save_user_data(sender_phone, 'name', incoming_msg)
-        response_message = get_message(sender_phone, 'dealership_address')
-        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_ADDRESS'])
-    
-    elif current_state == DEALERSHIP_STATES['WAITING_FOR_ADDRESS']:
-        save_user_data(sender_phone, 'address', incoming_msg)
-        response_message = get_message(sender_phone, 'dealership_cooperation')
-        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_COOPERATION'])
-    
-    elif current_state == DEALERSHIP_STATES['WAITING_FOR_COOPERATION']:
-        # Обработка ответа о сотрудничестве (текст или цифры)
-        cooperation_response = incoming_msg.lower()
-        if cooperation_response in ['да', 'yes', 'иә', 'иа', '1', '1️⃣']:
-            save_user_data(sender_phone, 'already_cooperates', 'Да')
-        else:
-            save_user_data(sender_phone, 'already_cooperates', 'Нет')
+        logger.error(f"Ошибка в обработчике start_handler: {e}", exc_info=True)
+        notification.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик для команды помощи
+@bot.router.message(command="help")
+def help_handler(notification: Notification) -> None:
+    """Обработчик команды /help"""
+    try:
+        # Получаем данные отправителя
+        sender_data = notification.event.get('senderData', {})
+        sender_phone = sender_data.get('sender', '').split('@')[0]
         
-        # Запрашиваем сначала удостоверение
-        response_message = get_message(sender_phone, 'dealership_id')
-        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_ID'])
-    
-    elif current_state == DEALERSHIP_STATES['WAITING_FOR_ID']:
-        # Сохранение информации об удостоверении
-        save_user_data(sender_phone, 'id_document', incoming_msg)
+        # Отправляем сообщение помощи
+        help_message = get_message(sender_phone, 'help')
+        notification.answer(help_message)
         
-        # Запрашиваем техпаспорт
-        response_message = get_message(sender_phone, 'dealership_techpassport')
-        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_TECHPASSPORT'])
-    
-    elif current_state == DEALERSHIP_STATES['WAITING_FOR_TECHPASSPORT']:
-        # Сохранение информации о техпаспорте
-        save_user_data(sender_phone, 'tech_passport', incoming_msg)
+        logger.info(f"Отправлена справка пользователю {sender_phone}")
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике help_handler: {e}", exc_info=True)
+        notification.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик для сброса состояния
+@bot.router.message(command="reset")
+def reset_handler(notification: Notification) -> None:
+    """Обработчик команды /reset"""
+    try:
+        # Получаем данные отправителя
+        sender_data = notification.event.get('senderData', {})
+        sender_phone = sender_data.get('sender', '').split('@')[0]
         
-        # Формирование сообщения о завершении
-        response_message = get_message(sender_phone, 'request_complete') + "\n\n" + get_message(sender_phone, 'new_request')
-        update_user_state(sender_phone, STATES['COMPLETED'])
-        
-        # Отправка данных в Trello
-        send_to_trello(sender_phone)
-    
-    elif current_state == CLIENT_STATES['WAITING_FOR_CAR_NUMBER']:
-        save_user_data(sender_phone, 'car_number', incoming_msg)
-        response_message = get_message(sender_phone, 'client_city')
-        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_CITY'])
-    
-    elif current_state == CLIENT_STATES['WAITING_FOR_CITY']:
-        save_user_data(sender_phone, 'city', incoming_msg)
-        response_message = get_message(sender_phone, 'client_mileage')
-        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_MILEAGE'])
-    
-    elif current_state == CLIENT_STATES['WAITING_FOR_MILEAGE']:
-        save_user_data(sender_phone, 'mileage', incoming_msg)
-        
-        # Запрашиваем сначала удостоверение
-        response_message = get_message(sender_phone, 'client_id')
-        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_ID'])
-    
-    elif current_state == CLIENT_STATES['WAITING_FOR_ID']:
-        # Сохранение информации об удостоверении
-        save_user_data(sender_phone, 'id_document', incoming_msg)
-        
-        # Запрашиваем техпаспорт
-        response_message = get_message(sender_phone, 'client_techpassport')
-        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_TECHPASSPORT'])
-    
-    elif current_state == CLIENT_STATES['WAITING_FOR_TECHPASSPORT']:
-        # Сохранение информации о техпаспорте
-        save_user_data(sender_phone, 'tech_passport', incoming_msg)
-        
-        # Формирование сообщения о завершении
-        response_message = get_message(sender_phone, 'request_complete') + "\n\n" + get_message(sender_phone, 'new_request')
-        update_user_state(sender_phone, STATES['COMPLETED'])
-        
-        # Отправка данных в Trello
-        send_to_trello(sender_phone)
-    
-    elif current_state == STATES['COMPLETED']:
-        # Обработка запроса на новую заявку (текст или цифра 9)
-        if incoming_msg.lower() in ['новая заявка', 'жаңа өтінім', '9', '9️⃣']:
-            # Сброс данных для новой заявки, но сохранение выбранного ранее языка
-            prev_language = get_user_language(sender_phone)
+        # Сбрасываем состояние пользователя
+        if sender_phone in user_states:
+            update_user_state(sender_phone, STATES['INITIAL'])
             user_data[sender_phone] = {}
-            set_user_language(sender_phone, prev_language)
+        
+        # Отправляем сообщение о сбросе
+        try:
+            reset_message = get_message(sender_phone, 'reset')
+            notification.answer(reset_message)
+        except KeyError:
+            # Если ключа 'reset' нет в словаре сообщений
+            notification.answer("Диалог сброшен. Выберите язык для продолжения.")
+        
+        # Отправляем меню выбора языка
+        notification.answer(get_message(sender_phone, 'choose_language'))
+        
+        logger.info(f"Сброшено состояние для пользователя {sender_phone}")
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике reset_handler: {e}", exc_info=True)
+        notification.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Основной обработчик для всех входящих сообщений
+@bot.router.message()
+def message_handler(notification: Notification) -> None:
+    """Обработчик всех входящих сообщений"""
+    try:
+        # Получаем данные о сообщении
+        event = notification.event
+        message_data = event.get('messageData', {})
+        
+        # Получаем текст сообщения
+        incoming_msg = ''
+        if 'textMessageData' in message_data:
+            incoming_msg = message_data['textMessageData'].get('textMessage', '').strip()
+        elif 'extendedTextMessageData' in message_data:
+            incoming_msg = message_data['extendedTextMessageData'].get('text', '').strip()
+        elif 'fileMessageData' in message_data:
+            incoming_msg = message_data['fileMessageData'].get('caption', '').strip()
+        
+        # Получаем данные отправителя
+        sender_data = event.get('senderData', {})
+        sender_phone = sender_data.get('sender', '').split('@')[0]
+        
+        # Получаем идентификатор сообщения и проверяем, не обрабатывали ли мы его уже
+        message_id = event.get('idMessage')
+        if is_message_processed(message_id, sender_phone):
+            logger.info(f"Сообщение {message_id} от {sender_phone} уже было обработано")
+            return
+        
+        # Получаем текущее состояние пользователя
+        current_state = get_user_state(sender_phone)
+        logger.info(f"Обрабатываем сообщение от {sender_phone}, состояние: {current_state}, текст: {incoming_msg}")
+        
+        # Проверка на запрос перезапуска диалога после завершения регистрации
+        if current_state in [DEALERSHIP_STATES['COMPLETED'], CLIENT_STATES['COMPLETED']]:
+            # Проверяем запрос на перезапуск
+            if incoming_msg.lower() in ['9', 'новая заявка', 'жаңа өтінім', 'restart', 'начать заново', 'сначала']:
+                # Сбрасываем состояние пользователя на начальное
+                update_user_state(sender_phone, STATES['INITIAL'])
+                user_data[sender_phone] = {}  # Очищаем данные пользователя
+                
+                # Отправляем сообщение о перезапуске с меню выбора языка
+                notification.answer(get_message(sender_phone, 'choose_language'))
+                logger.info(f"Перезапуск диалога для пользователя {sender_phone}")
+                return
+        
+        # Обработка сообщения в зависимости от состояния пользователя
+        if current_state == STATES['INITIAL']:
+            # Выбор языка
+            process_language_selection(notification, sender_phone, incoming_msg)
+        elif current_state == STATES['LANGUAGE_SELECTED']:
+            # Выбор типа пользователя
+            process_user_type_selection(notification, sender_phone, incoming_msg)
+        else:
+            # Обработка в зависимости от типа пользователя
+            user_type = get_user_type(sender_phone)
+            if user_type == USER_TYPES['DEALERSHIP']:
+                process_dealership_state(notification, sender_phone, incoming_msg, current_state)
+            elif user_type == USER_TYPES['CLIENT']:
+                process_client_state(notification, sender_phone, incoming_msg, current_state)
+            else:
+                # Если тип пользователя не определен, предлагаем выбрать заново
+                notification.answer(get_message(sender_phone, 'unknown_user_type'))
+                update_user_state(sender_phone, STATES['LANGUAGE_SELECTED'])
+                notification.answer(get_message(sender_phone, 'user_type_selection'))
+                
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике message_handler: {e}", exc_info=True)
+        try:
+            notification.answer("Произошла ошибка. Пожалуйста, попробуйте позже или напишите /reset для сброса.")
+        except:
+            pass
+
+def process_language_selection(notification, sender_phone, text):
+    """Обработка выбора языка"""
+    if text.lower() in ['1', 'русский', 'рус', 'ru']:
+        set_user_language(sender_phone, LANGUAGES['RU'])
+        update_user_state(sender_phone, STATES['LANGUAGE_SELECTED'])
+        notification.answer(get_message(sender_phone, 'language_selected').format(language='русский'))
+        notification.answer(get_message(sender_phone, 'user_type_selection'))
+    elif text.lower() in ['2', 'қазақша', 'казахский', 'kz']:
+        set_user_language(sender_phone, LANGUAGES['KZ'])
+        update_user_state(sender_phone, STATES['LANGUAGE_SELECTED'])
+        notification.answer(get_message(sender_phone, 'language_selected').format(language='қазақша'))
+        notification.answer(get_message(sender_phone, 'user_type_selection'))
+    else:
+        notification.answer(get_message(sender_phone, 'invalid_language'))
+
+def process_user_type_selection(notification, sender_phone, text):
+    """Обработка выбора типа пользователя"""
+    if text.lower() in ['1', 'автосалон', 'дилер', 'dealer']:
+        set_user_type(sender_phone, USER_TYPES['DEALERSHIP'])
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_NAME'])
+        notification.answer(get_message(sender_phone, 'dealership_selected'))
+        notification.answer(get_message(sender_phone, 'ask_dealership_name'))
+    elif text.lower() in ['2', 'клиент', 'покупатель', 'client']:
+        set_user_type(sender_phone, USER_TYPES['CLIENT'])
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_ID_DOCUMENT'])
+        notification.answer(get_message(sender_phone, 'client_selected'))
+        notification.answer(get_message(sender_phone, 'ask_id_document'))
+    else:
+        notification.answer(get_message(sender_phone, 'invalid_user_type'))
+
+def process_dealership_state(notification, sender_phone, text, current_state):
+    """Обработка состояний для автосалона"""
+    if current_state == DEALERSHIP_STATES['WAITING_FOR_NAME']:
+        save_user_data(sender_phone, 'name', text)
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_ADDRESS'])
+        notification.answer(get_message(sender_phone, 'ask_dealership_address'))
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_ADDRESS']:
+        save_user_data(sender_phone, 'address', text)
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_COOPERATION'])
+        notification.answer(get_message(sender_phone, 'ask_already_cooperates'))
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_COOPERATION']:
+        save_user_data(sender_phone, 'already_cooperates', text)
+        update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_ID_DOCUMENT'])
+        notification.answer(get_message(sender_phone, 'ask_id_document'))
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_ID_DOCUMENT']:
+        # Проверяем, отправлен ли файл
+        message_data = notification.event.get('messageData', {})
+        if 'fileMessageData' in message_data:
+            file_data = message_data['fileMessageData']
+            file_name = file_data.get('fileName', 'id_document.jpg')
+            file_url = file_data.get('downloadUrl', '')
+            save_user_data(sender_phone, 'id_document', file_url)
+            update_user_state(sender_phone, DEALERSHIP_STATES['WAITING_FOR_TECHPASSPORT'])
+            notification.answer(get_message(sender_phone, 'file_received'))
+            notification.answer(get_message(sender_phone, 'ask_tech_passport'))
+        else:
+            notification.answer(get_message(sender_phone, 'ask_file_not_text'))
+    elif current_state == DEALERSHIP_STATES['WAITING_FOR_TECHPASSPORT']:
+        # Проверяем, отправлен ли файл
+        message_data = notification.event.get('messageData', {})
+        if 'fileMessageData' in message_data:
+            file_data = message_data['fileMessageData']
+            file_name = file_data.get('fileName', 'tech_passport.jpg')
+            file_url = file_data.get('downloadUrl', '')
+            save_user_data(sender_phone, 'tech_passport', file_url)
+            update_user_state(sender_phone, DEALERSHIP_STATES['COMPLETED'])
+            notification.answer(get_message(sender_phone, 'file_received'))
             
-            # Запрос на выбор типа пользователя
-            response_message = get_message(sender_phone, 'select_user_type')
-            update_user_state(sender_phone, STATES['WAITING_FOR_USER_TYPE'])
-    
-    # Отправка ответного сообщения через waApi
-    if response_message:
-        send_whatsapp_message(sender_phone, response_message)
-    
-    return "OK", 200
+            # Отправляем данные в Trello и завершаем регистрацию
+            send_to_trello(sender_phone)
+            notification.answer(get_message(sender_phone, 'dealership_registration_completed'))
+            
+            # Предлагаем начать заново при необходимости
+            notification.answer(get_message(sender_phone, 'ask_restart'))
+        else:
+            notification.answer(get_message(sender_phone, 'ask_file_not_text'))
 
-@app.route('/favicon.ico')
-def favicon():
-    """Обработчик для запросов фавиконки"""
-    return "", 204  # Возвращаем пустой ответ со статусом 204 No Content
-
-# Добавляем обработчик ошибок для отладки
-@app.errorhandler(Exception)
-def handle_error(e):
-    logger.error(f"Произошла ошибка: {str(e)}", exc_info=True)
-    return jsonify(error=str(e)), 500
+def process_client_state(notification, sender_phone, text, current_state):
+    """Обработка состояний для клиента"""
+    if current_state == CLIENT_STATES['WAITING_FOR_ID_DOCUMENT']:
+        # Проверяем, отправлен ли файл
+        message_data = notification.event.get('messageData', {})
+        if 'fileMessageData' in message_data:
+            file_data = message_data['fileMessageData']
+            file_name = file_data.get('fileName', 'id_document.jpg')
+            file_url = file_data.get('downloadUrl', '')
+            save_user_data(sender_phone, 'id_document', file_url)
+            update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_TECHPASSPORT'])
+            notification.answer(get_message(sender_phone, 'file_received'))
+            notification.answer(get_message(sender_phone, 'ask_tech_passport'))
+        else:
+            notification.answer(get_message(sender_phone, 'ask_file_not_text'))
+    elif current_state == CLIENT_STATES['WAITING_FOR_TECHPASSPORT']:
+        # Проверяем, отправлен ли файл
+        message_data = notification.event.get('messageData', {})
+        if 'fileMessageData' in message_data:
+            file_data = message_data['fileMessageData']
+            file_name = file_data.get('fileName', 'tech_passport.jpg')
+            file_url = file_data.get('downloadUrl', '')
+            save_user_data(sender_phone, 'tech_passport', file_url)
+            update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_CAR_NUMBER'])
+            notification.answer(get_message(sender_phone, 'file_received'))
+            notification.answer(get_message(sender_phone, 'ask_car_number'))
+        else:
+            notification.answer(get_message(sender_phone, 'ask_file_not_text'))
+    elif current_state == CLIENT_STATES['WAITING_FOR_CAR_NUMBER']:
+        save_user_data(sender_phone, 'car_number', text)
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_CITY'])
+        notification.answer(get_message(sender_phone, 'ask_city'))
+    elif current_state == CLIENT_STATES['WAITING_FOR_CITY']:
+        save_user_data(sender_phone, 'city', text)
+        update_user_state(sender_phone, CLIENT_STATES['WAITING_FOR_MILEAGE'])
+        notification.answer(get_message(sender_phone, 'ask_mileage'))
+    elif current_state == CLIENT_STATES['WAITING_FOR_MILEAGE']:
+        save_user_data(sender_phone, 'mileage', text)
+        update_user_state(sender_phone, CLIENT_STATES['COMPLETED'])
+        
+        # Отправляем данные в Trello и завершаем регистрацию
+        send_to_trello(sender_phone)
+        notification.answer(get_message(sender_phone, 'client_registration_completed'))
+        
+        # Предлагаем начать заново при необходимости
+        notification.answer(get_message(sender_phone, 'ask_restart'))
 
 if __name__ == '__main__':
-    # Запуск на всех IP (0.0.0.0) чтобы принимать внешние запросы
-    logger.info("Запуск сервера на 0.0.0.0:5050")
-    app.run(debug=True, host='0.0.0.0', port=5050)
+    bot.run_forever()

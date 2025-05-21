@@ -4,10 +4,8 @@ from dotenv import load_dotenv
 # Загрузка переменных из .env файла
 load_dotenv()
 
-# Конфигурация для waApi WhatsApp
-WAAPI_URL = os.getenv('WAAPI_URL')
-WAAPI_TOKEN = os.getenv('WAAPI_TOKEN')
-WAAPI_INSTANCE_ID = os.getenv('WAAPI_INSTANCE_ID', '1')
+GREEN_API_API_TOKEN = os.getenv('API_TOKEN')
+GREEN_API_ID_INSTANCE = os.getenv('INSTANCE_ID', '1')
 
 # Конфигурация для Trello API
 TRELLO_API_KEY = os.getenv('TRELLO_API_KEY')
@@ -17,14 +15,15 @@ TRELLO_LIST_ID = os.getenv('TRELLO_LIST_ID')
 
 # Доступные языки
 LANGUAGES = {
-    'RU': 'ru',
-    'KZ': 'kz'
+    'RU': 'RU',
+    'KZ': 'KZ'
 }
 
 # Состояния диалога для основных этапов
 STATES = {
     'INITIAL': 0,
     'WAITING_FOR_LANGUAGE': 1,  # Новое состояние для выбора языка
+    'LANGUAGE_SELECTED': 9,     # Добавлено для корректной работы бота
     'WAITING_FOR_USER_TYPE': 2,
     'WAITING_FOR_NAME': 3,
     'WAITING_FOR_CITY': 4,
@@ -46,7 +45,7 @@ DEALERSHIP_STATES = {
     'WAITING_FOR_NAME': 10,
     'WAITING_FOR_ADDRESS': 11,
     'WAITING_FOR_COOPERATION': 12,  
-    'WAITING_FOR_ID': 13,           # Запрос удостоверения
+    'WAITING_FOR_ID_DOCUMENT': 13,           # Запрос удостоверения
     'WAITING_FOR_TECHPASSPORT': 14, # Запрос техпаспорта
     'COMPLETED': 15
 }
@@ -56,14 +55,14 @@ CLIENT_STATES = {
     'WAITING_FOR_CAR_NUMBER': 20,
     'WAITING_FOR_CITY': 21,
     'WAITING_FOR_MILEAGE': 22,
-    'WAITING_FOR_ID': 23,           # Запрос удостоверения
+    'WAITING_FOR_ID_DOCUMENT': 23,           # Запрос удостоверения
     'WAITING_FOR_TECHPASSPORT': 24, # Запрос техпаспорта
     'COMPLETED': 25
 }
 
 # Тексты на разных языках
 MESSAGES = {
-    'ru': {
+    'RU': {
         # Выбор языка
         'choose_language': 'Добрый день, это компания Carso.kz!\nВыберите язык / Тілді таңдаңыз:\n1️⃣ Русский\n2️⃣ Қазақша',
         'invalid_language': 'Пожалуйста, выберите язык (введите 1 или 2):\n1️⃣ Русский\n2️⃣ Қазақша',
@@ -91,9 +90,29 @@ MESSAGES = {
         
         # Завершение
         'request_complete': 'Спасибо за предоставленную информацию! Ваша заявка успешно отправлена. Наш менеджер свяжется с вами в ближайшее время.',
-        'new_request': 'Если хотите создать новую заявку, напишите "Новая заявка" или цифру 9️⃣.'
+        'new_request': 'Если хотите создать новую заявку, напишите "Новая заявка" или цифру 9️⃣.',
+        
+        # Новые ключи
+        'language_selected': 'Выбран язык: {language}',
+        'user_type_selection': 'Пожалуйста, выберите категорию:\n1️⃣ Автосалон\n2️⃣ Клиент',
+        'dealership_selected': 'Вы выбрали категорию: Автосалон.',
+        'ask_dealership_name': 'Пожалуйста, укажите название вашего автосалона.',
+        'ask_dealership_address': 'Пожалуйста, укажите адрес вашего автосалона.',
+        'ask_already_cooperates': 'Уже сотрудничаете с нами?\n1️⃣ Да\n2️⃣ Нет',
+        'ask_id_document': 'Пожалуйста, отправьте фото вашего удостоверения личности.',
+        'ask_tech_passport': 'Теперь, пожалуйста, отправьте фото техпаспорта.',
+        'file_received': 'Файл получен. Спасибо!',
+        'ask_file_not_text': 'Пожалуйста, отправьте файл (фото), а не текст.',
+        'dealership_registration_completed': 'Регистрация автосалона завершена! Ваша заявка отправлена.',
+        'ask_restart': 'Если хотите создать новую заявку, напишите "Новая заявка" или 9️⃣.',
+        'client_selected': 'Вы выбрали категорию: Клиент.',
+        'client_registration_completed': 'Регистрация клиента завершена! Ваша заявка отправлена.',
+        'ask_car_number': 'Пожалуйста, укажите номер вашего автомобиля.',
+        'ask_city': 'Пожалуйста, укажите ваш город.',
+        'ask_mileage': 'Пожалуйста, укажите пробег вашего автомобиля (в км).',
+        'unknown_user_type': 'Не удалось определить категорию пользователя. Пожалуйста, выберите снова.'
     },
-    'kz': {
+    'KZ': {
         # Выбор языка
         'choose_language': 'Добрый день, это компания Carso.kz!\nВыберите язык / Тілді таңдаңыз:\n1️⃣ Русский\n2️⃣ Қазақша',
         'invalid_language': 'Тілді таңдаңыз (1 немесе 2 енгізіңіз):\n1️⃣ Русский\n2️⃣ Қазақша',
@@ -121,6 +140,26 @@ MESSAGES = {
         
         # Завершение
         'request_complete': 'Ақпарат үшін рахмет! Сіздің өтініміңіз сәтті жіберілді. Менеджер жақын арада сізбен байланысады.',
-        'new_request': 'Жаңа өтінім жасағыңыз келсе, "Жаңа өтінім" деп жазыңыз немесе 9️⃣ санын енгізіңіз.'
+        'new_request': 'Жаңа өтінім жасағыңыз келсе, "Жаңа өтінім" деп жазыңыз немесе 9️⃣ санын енгізіңіз.',
+        
+        # Новые ключи
+        'language_selected': 'Таңдалған тіл: {language}',
+        'user_type_selection': 'Санатты таңдаңыз:\n1️⃣ Автосалон\n2️⃣ Клиент',
+        'dealership_selected': 'Сіз Автосалон санатын таңдадыңыз.',
+        'ask_dealership_name': 'Автосалоныңыздың атауын көрсетіңіз.',
+        'ask_dealership_address': 'Автосалоныңыздың мекенжайын көрсетіңіз.',
+        'ask_already_cooperates': 'Бұрыннан ынтымақтасасыз ба?\n1️⃣ Иә\n2️⃣ Жоқ',
+        'ask_id_document': 'Жеке куәлігіңіздің суретін жіберіңіз.',
+        'ask_tech_passport': 'Енді көлік құжаттарының суретін жіберіңіз.',
+        'file_received': 'Файл қабылданды. Рахмет!',
+        'ask_file_not_text': 'Файл (фото) жіберіңіз, мәтін емес.',
+        'dealership_registration_completed': 'Автосалон тіркеуі аяқталды! Өтініміңіз жіберілді.',
+        'ask_restart': 'Жаңа өтінім жасағыңыз келсе, "Жаңа өтінім" деп жазыңыз немесе 9️⃣ санын енгізіңіз.',
+        'client_selected': 'Сіз Клиент санатын таңдадыңыз.',
+        'client_registration_completed': 'Клиент тіркеуі аяқталды! Өтініміңіз жіберілді.',
+        'ask_car_number': 'Көлігіңіздің нөмірін көрсетіңіз.',
+        'ask_city': 'Қалаңызды көрсетіңіз.',
+        'ask_mileage': 'Көлігіңіздің жүрген жолын көрсетіңіз (км).',
+        'unknown_user_type': 'Пайдаланушы санатын анықтау мүмкін болмады. Қайта таңдаңыз.'
     }
 }
